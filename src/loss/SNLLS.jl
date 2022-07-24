@@ -44,11 +44,14 @@ end
 
 function objective!(semsnlls::SemSNLLS, par, model::AbstractSemSingle)
 
+
     if !isnothing(model.imply.Gc)
         s = semsnlls.s - model.imply.Gc*model.imply.c
         sᵀV = s'*semsnlls.V
+        c = sᵀV*s
     else
         sᵀV = semsnlls.sᵀV
+        c = 0.0
     end
     
     outer = sᵀV*model.imply.G
@@ -63,12 +66,12 @@ function objective!(semsnlls::SemSNLLS, par, model::AbstractSemSingle)
             return Inf
         else
             a = b\(transpose(outer))
-            return -outer*a
+            return -outer*a + c
         end
 
     else
         a = b\(transpose(outer))
-        return -outer*a
+        return -outer*a + c
     end
 end
 
