@@ -18,13 +18,12 @@ struct SNLLS{N1, N2, N3, I1, I2, I3, I6, M1, M2, M3, M4, N4, I4, M5, I5, D} <: S
     G::M3
     ∇G::M4
 
-    q_mean::N4
-    M_indices::I4
-    G_μ::M5
-    G_μ_indices::I5
+    Gc::N4
+    c::M5
+    q_constant::I5
+    c_indices::I4
 
     identifier::D
-
 end
 
 ############################################################################
@@ -35,8 +34,6 @@ function SNLLS(;
     specification,
     start_val = start_fabin3,
     kwargs...)
-
-    specification = spec_mean
 
     ram_matrices = RAMMatrices(specification)
     identifier = StructuralEquationModels.identifier(ram_matrices)
@@ -56,13 +53,13 @@ function SNLLS(;
         end
     end
     
-    S_indices = get_parameter_indices(parameters, S; index_function = eachindex_lower, linear_indices = true)
+    S_indices = get_parameter_indices_lower(parameters, S; linear_indices = true)
     A_indices = A_ind
     
     A_pars, S_pars = get_partition(A_indices, S_indices)
     
     # dimension of undirected and directed parameters
-    q = size(start_test_mean)
+    q = length(parameters)
     q_undirected = length(S_pars)
     q_directed = length(A_pars)
     
@@ -75,17 +72,17 @@ function SNLLS(;
     # A matrix
     A_pre = zeros(n_nod, n_nod)
     S_pre = zeros(n_nod, n_nod)
-    !isnothing(M_indices) ? M_pre = zeros(n_nod) : M_pre = nothing
+    !isnothing(M_ind) ? M_pre = zeros(n_nod) : M_pre = nothing
     
     set_RAMConstants!(A_pre, S_pre, M_pre, ram_matrices.constants)
     
-    A_pre = check_acyclic(A_pre, n_par, A_ind)
+    A_pre = check_acyclic(A_pre, q, A_ind)
     
     I_A = zeros(n_nod, n_nod)
     
     size_σ = Int(0.5*(n_var^2+n_var))
     
-    if !isnothing(M)
+    if !isnothing(M_ind)
     
         @error "meanstructure not reworked"
     
@@ -103,6 +100,24 @@ function SNLLS(;
     
     end
 
+    if any(getproperty.(ram_matrices.constants, :matrix) .== :S)
+
+        constants = ram_matrices.constants
+        constants = constants[getproperty.(ram_matrices.constants, :matrix) .== :S]
+        constants = filter( x -> x.index[1] >= x.index[2], constants)
+        
+        q_constant = length(constants)
+        c = getproperty.(constants, :value)
+        c_indices = [[getproperty(c, :index)] for c in constants]
+        Gc = zeros(size_σ, q_constant)
+
+    else
+        Gc = nothing
+        c = nothing
+        q_constant = nothing
+        c_indices = nothing
+    end
+
     return SNLLS(
         q_directed,
         q_undirected,
@@ -118,10 +133,10 @@ function SNLLS(;
         G,
         ∇G,
 
-        q_mean,
-        M_indices,
-        G_μ,
-        G_μ_indices,
+        Gc,
+        c,
+        q_constant,
+        c_indices,
 
         identifier
     )
@@ -148,7 +163,24 @@ function objective!(imply::SNLLS, par, model::AbstractSemSingle)
         imply.σ_indices,
         imply.I_A)
 
+    if !isnothing(imply.Gc)
+        fill_G_c!(
+        imply.Gc, 
+        imply.q_constant, 
+        imply.size_σ,
+        imply.c_indices, 
+        imply.σ_indices,
+        imply.I_A)
+    end
+
 end
+
+############################################################################
+### methods
+############################################################################
+
+identifier(imply::SNLLS) = imply.identifier
+n_par(imply::SNLLS) = length(imply.q_directed)
 
 ############################################################################
 ### additional functions
@@ -167,6 +199,26 @@ function fill_G!(G, q_undirected, size_σ, S_indices, σ_indices, I_A)
                 G[r, s] += I_A[i, l]*I_A[j, k]
                 if l != k
                     G[r, s] += I_A[i, k]*I_A[j, l]
+                end
+            end
+        end
+    end
+
+end
+
+function fill_G_c!(Gc, q_constant, size_σ, c_indices, σ_indices, I_A)
+
+    fill!(Gc, zero(eltype(Gc)))
+
+    for s in 1:q_constant
+        for ind in c_indices[s]
+            l, k = ind[1], ind[2]
+            # rows
+            for r in 1:size_σ
+                i, j = σ_indices[r][1], σ_indices[r][2]
+                Gc[r, s] += I_A[i, l]*I_A[j, k]
+                if l != k
+                    Gc[r, s] += I_A[i, k]*I_A[j, l]
                 end
             end
         end
@@ -258,11 +310,14 @@ function fill_∇G!(∇G, q_undirected, size_σ, q_directed, S_indices, σ_indic
 
 end
 
-############################################################################
-### Pretty Printing
-############################################################################
+function get_parameter_indices_lower(parameters, M; linear = true, kwargs...)
 
-function Base.show(io::IO, struct_inst::SNLLS)
-    print_type_name(io, struct_inst)
-    print_field_types(io, struct_inst)
+    M_indices = [filter(x -> x[1] >= x[2], findall(x -> (x == par), M)) for par in parameters]
+
+    if linear
+        M_indices = cartesian2linear.(M_indices, [M])
+    end
+
+    return M_indices
+
 end

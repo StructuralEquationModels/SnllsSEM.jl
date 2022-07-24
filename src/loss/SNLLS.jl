@@ -4,7 +4,7 @@
 ### Types
 ############################################################################
 
-mutable struct SemSNLLS{Vt, St, B, FT, GT, HT} <: SemLossFunction
+mutable struct SemSNLLS{Vt, St, B} <: SemLossFunction
     V::Vt
     s::St
     sᵀV::B
@@ -14,8 +14,8 @@ end
 ### Constructors
 ############################################################################
 
-function SemSNLLS(
-    observed; 
+function SemSNLLS(;
+    observed,
     V = nothing,
     kwargs...)
     
@@ -27,7 +27,7 @@ function SemSNLLS(
         D = duplication_matrix(observed.n_man)
         S = inv(observed.obs_cov)
         S = kron(S, S)
-        V = 0.5*(D'*S*D)
+        V = Symmetric(0.5*(D'*S*D))
     end
     
     sᵀV = transpose(s)*V
@@ -43,12 +43,33 @@ end
 ############################################################################
 
 function objective!(semsnlls::SemSNLLS, par, model::AbstractSemSingle)
-    
-    outer = semsnlls.sᵀV*model.imply.G
-    b = cholesky(Symmetric(model.imply.G'*semsnlls.V*model.imply.G))
-    a = b\(transpose(outer))
 
-    return -outer*a
+    if !isnothing(model.imply.Gc)
+        s = semsnlls.s - model.imply.Gc*model.imply.c
+        sᵀV = s'*semsnlls.V
+    else
+        sᵀV = semsnlls.sᵀV
+    end
+    
+    outer = sᵀV*model.imply.G
+    prod = Symmetric(model.imply.G'*semsnlls.V*model.imply.G)
+    b = cholesky(prod; check = false)
+
+    if !isposdef(b)
+        a = zeros(size(prod)); a[diagind(a)] .= 0.001
+        b = cholesky(prod + a; check = false)
+
+        if !isposdef(b)
+            return Inf
+        else
+            a = b\(transpose(outer))
+            return -outer*a
+        end
+
+    else
+        a = b\(transpose(outer))
+        return -outer*a
+    end
 end
 
 ############################################################################
