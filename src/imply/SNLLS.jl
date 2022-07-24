@@ -2,7 +2,7 @@
 ### Types
 ############################################################################
 
-struct SNLLS{N1, N2, N3, I1, I2, I3, I6, M1, M2, M3, M4, N4, I4, M5, I5, V1} <: SemImply
+struct SNLLS{N1, N2, N3, I1, I2, I3, I6, M1, M2, M3, M4, N4, I4, M5, I5, D} <: SemImply
 
     q_directed::N1
     q_undirected::N2
@@ -23,7 +23,7 @@ struct SNLLS{N1, N2, N3, I1, I2, I3, I6, M1, M2, M3, M4, N4, I4, M5, I5, V1} <: 
     G_μ::M5
     G_μ_indices::I5
 
-    start_val::V1
+    identifier::D
 
 end
 
@@ -32,98 +32,62 @@ end
 ############################################################################
 
 function SNLLS(;
-    ram_matrices,
+    specification,
     start_val = start_fabin3,
-    gradient = true,
     kwargs...)
 
-    A, S, F, M, parameters = 
-        ram_matrices.A, ram_matrices.S, ram_matrices.F, ram_matrices.M, ram_matrices.parameters
+    specification = spec_mean
 
-    n_var, n_nod = size(F)
-
-    A = Matrix(A)
-    S = Matrix(S)
-    F = Matrix(F); F = convert(Matrix{Float64}, F)
-
-    if check_constants(S)
-        @error "constant variance/covariance parameters different from zero are not allowed in SNLLS"
-    end
-
+    ram_matrices = RAMMatrices(specification)
+    identifier = StructuralEquationModels.identifier(ram_matrices)
+    
+    A_ind, S_ind, F_ind, M_ind, parameters = ram_matrices.A_ind, 
+        ram_matrices.S_ind, ram_matrices.F_ind, ram_matrices.M_ind, ram_matrices.parameters
+    
+    n_var, n_nod = ram_matrices.size_F
+    
     σ_indices = findall(isone, LowerTriangular(ones(n_var, n_var)))
-
-    # store the indices of the parameters
-    A_indices = get_parameter_indices(parameters, A)
+    
+    S = zeros(n_nod, n_nod)
+    S = Matrix{Any}(S)
+    for (i, par) in enumerate(parameters)
+        for ind in S_ind[i]
+            S[ind] = par
+        end
+    end
+    
     S_indices = get_parameter_indices(parameters, S; index_function = eachindex_lower, linear_indices = true)
-
-    A_indices = [convert(Vector{Int}, indices) for indices in A_indices]
-    S_indices = [convert(Vector{Int}, indices) for indices in S_indices]
-
+    A_indices = A_ind
+    
     A_pars, S_pars = get_partition(A_indices, S_indices)
-
+    
     # dimension of undirected and directed parameters
-    q = size(start_val)
+    q = size(start_test_mean)
     q_undirected = length(S_pars)
     q_directed = length(A_pars)
-
+    
     A_indices_linear = A_indices[A_pars]
-    A_indices_cartesian = linear2cartesian.(A_indices_linear, [A])
-
-    S_indices = linear2cartesian.(S_indices, [S])
+    A_indices_cartesian = linear2cartesian.(A_indices_linear, [size(S)])
+    
+    S_indices = linear2cartesian.(S_indices, [size(S)])
     S_indices = S_indices[S_pars]
-
+    
     # A matrix
-    A_pre = zeros(size(A)...)
-    set_constants!(A, A_pre)
-
-    A_rand = copy(A_pre)
-    randpar = rand(length(start_val))
-
-    fill_matrix(
-        A_rand,
-        A_indices_linear,
-        randpar)
-
-    acyclic = isone(det(I-A_rand))
-
-    # check if A is lower or upper triangular
-    if iszero(A_rand[.!tril(ones(Bool, size(A)...))])
-        A_pre = LowerTriangular(A_pre)
-    elseif iszero(A_rand[.!tril(ones(Bool, size(A)...))'])
-        A_pre = UpperTriangular(A_pre)
-    elseif acyclic
-        @info "Your model is acyclic, specifying the A Matrix as either Upper or Lower Triangular can have great performance benefits."
-    end
-
+    A_pre = zeros(n_nod, n_nod)
+    S_pre = zeros(n_nod, n_nod)
+    !isnothing(M_indices) ? M_pre = zeros(n_nod) : M_pre = nothing
+    
+    set_RAMConstants!(A_pre, S_pre, M_pre, ram_matrices.constants)
+    
+    A_pre = check_acyclic(A_pre, n_par, A_ind)
+    
     I_A = zeros(n_nod, n_nod)
-
+    
     size_σ = Int(0.5*(n_var^2+n_var))
-
+    
     if !isnothing(M)
-
-        if check_constants(M)
-            @error "constant mean parameters different from zero are not allowed in SNLLS"
-        end
     
-        M_indices = get_parameter_indices(parameters, M)
-        M_indices = [convert(Vector{Int}, indices) for indices in M_indices]
-        M_pars = get_partition(M_indices)
-        M_indices = M_indices[M_pars]
-        q_mean = length(M_pars)
-    
-        G = zeros(size_σ+n_var, q_undirected+q_mean)
-    
-        G_μ = zeros(n_var, q_mean)
-    
-        G_μ_indices = CartesianIndices((size_σ .+ (1:n_var), q_undirected .+ (1:q_mean)))
-        # TODO: analyze sparsity pattern of G
-    
-        if gradient
-            ∇G = zeros((size_σ+n_var)*(q_undirected+q_mean), q_directed)
-            # TODO: analyze sparsity pattern of ∇G
-        else
-            ∇G = nothing
-        end
+        @error "meanstructure not reworked"
     
     else
         
@@ -135,12 +99,7 @@ function SNLLS(;
         G = zeros(size_σ, q_undirected)
         # TODO: analyze sparsity pattern of G
     
-        if gradient
-            ∇G = zeros(size_σ*q_undirected, q_directed)
-            # TODO: analyze sparsity pattern of ∇G
-        else
-            ∇G = nothing
-        end
+        ∇G = nothing
     
     end
 
@@ -164,7 +123,7 @@ function SNLLS(;
         G_μ,
         G_μ_indices,
 
-        start_val
+        identifier
     )
 end
 
@@ -172,7 +131,7 @@ end
 ### functors
 ############################################################################
 
-function (imply::SNLLS)(par, F, G, H, model)
+function objective!(imply::SNLLS, par, model::AbstractSemSingle) 
 
     fill_matrix(
         imply.A_pre,
@@ -188,35 +147,6 @@ function (imply::SNLLS)(par, F, G, H, model)
         imply.S_indices,
         imply.σ_indices,
         imply.I_A)
-
-    if !isnothing(imply.M_indices)
-
-        FI_A = imply.I_A[1:Int(model.observed.n_man), :]
-
-        fill_G_μ!(
-            imply.G_μ,
-            imply.q_mean, 
-            imply.M_indices, 
-            FI_A)
-
-        copyto!(imply.G, imply.G_μ_indices, imply.G_μ, CartesianIndices(imply.G_μ))
-
-    end
-
-    if G
-        fill_∇G!(
-            imply.∇G,
-            imply.q_undirected,
-            imply.size_σ,
-            imply.q_directed,
-            imply.S_indices,
-            imply.σ_indices,
-            imply.A_indices_cartesian,
-            imply.I_A,
-            imply.q_mean,
-            imply.M_indices,
-            model.observed.n_man)
-    end
 
 end
 
